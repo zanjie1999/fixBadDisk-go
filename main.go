@@ -337,7 +337,7 @@ func main() {
 			}
 
 			ms := float64(i) * fsize / allt
-			nsp := fsize / nt
+			nsp := fsize / math.Max(nt, 1e-9)
 			if nsp > maxsp {
 				maxsp = nsp
 			}
@@ -363,6 +363,7 @@ func main() {
 				fmt.Printf("\n%d%%\n\n", per)
 				minsp = math.MaxFloat64
 				maxsp = 0
+				minavg = 0
 			}
 		}
 
@@ -467,7 +468,7 @@ func main() {
 			}
 
 			ms := float64(i) * fsize / allt
-			nsp := fsize / nt
+			nsp := fsize / math.Max(nt, 1e-9)
 			if nsp > maxsp {
 				maxsp = nsp
 			}
@@ -493,6 +494,7 @@ func main() {
 				fmt.Printf("\n%d%%\n\n", per)
 				minsp = math.MaxFloat64
 				maxsp = 0
+				minavg = 0
 			}
 		}
 
