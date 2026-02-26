@@ -4,10 +4,9 @@
 package main
 
 import (
-	"crypto/md5"
 	"crypto/rand"
-	"encoding/hex"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"os"
@@ -16,11 +15,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
-const ver = "14.0"
+const ver = "14.1"
 
 // fileGenResult 预生成文件的结果
 type fileGenResult struct {
@@ -28,46 +26,71 @@ type fileGenResult struct {
 	name string
 }
 
-// fileGenerator 使用 worker pool 并发预生成随机文件
+// fileGenerator 使用 worker pool 并发预生成随机文件，根据消费速度自适应扩缩 worker
 type fileGenerator struct {
-	fsize   float64
-	ch      chan fileGenResult
-	done    chan struct{}
-	wg      sync.WaitGroup
-	workers int
+	fsize      float64
+	ch         chan fileGenResult
+	done       chan struct{}
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	curWorkers int
+	maxWorkers int
 }
 
-func newFileGenerator(fsize float64, bufSize int) *fileGenerator {
-	workers := runtime.NumCPU()
-	if workers < 2 {
-		workers = 2
+func newFileGenerator(fsize float64) *fileGenerator {
+	maxWorkers := runtime.NumCPU()
+	if maxWorkers < 2 {
+		maxWorkers = 2
+	}
+	// 大文件时限制最大 worker 数以控制内存
+	if memLimit := int(512.0 / fsize); memLimit >= 2 && memLimit < maxWorkers {
+		maxWorkers = memLimit
 	}
 	return &fileGenerator{
-		fsize:   fsize,
-		ch:      make(chan fileGenResult, bufSize),
-		done:    make(chan struct{}),
-		workers: workers,
+		fsize:      fsize,
+		ch:         make(chan fileGenResult, 2),
+		done:       make(chan struct{}),
+		maxWorkers: maxWorkers,
 	}
 }
 
 func (g *fileGenerator) start() {
-	for i := 0; i < g.workers; i++ {
-		g.wg.Add(1)
-		go func() {
-			defer g.wg.Done()
-			for {
-				data, ok := genFile(g.fsize)
-				if !ok {
-					return
-				}
-				select {
-				case g.ch <- fileGenResult{data: data, name: data2name(data)}:
-				case <-g.done:
-					return
-				}
-			}
-		}()
+	// 最少 2 个 worker 起步
+	g.addWorker()
+	g.addWorker()
+}
+
+func (g *fileGenerator) addWorker() {
+	g.mu.Lock()
+	if g.curWorkers >= g.maxWorkers {
+		g.mu.Unlock()
+		return
 	}
+	g.curWorkers++
+	g.mu.Unlock()
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		for {
+			data, ok := genFile(g.fsize)
+			if !ok {
+				return
+			}
+			select {
+			case g.ch <- fileGenResult{data: data, name: data2name(data)}:
+			case <-g.done:
+				return
+			}
+		}
+	}()
+}
+
+// get 获取下一个预生成文件，若 channel 为空说明生成跟不上写入，自动扩 worker
+func (g *fileGenerator) get() fileGenResult {
+	if len(g.ch) == 0 {
+		g.addWorker()
+	}
+	return <-g.ch
 }
 
 func (g *fileGenerator) stop() {
@@ -88,9 +111,11 @@ func genFile(fsize float64) ([]byte, bool) {
 	return buf, true
 }
 
+var crc32cTable = crc32.MakeTable(crc32.Castagnoli)
+
 func data2name(data []byte) string {
-	h := md5.Sum(data)
-	return hex.EncodeToString(h[:])[:8]
+	h := crc32.Checksum(data, crc32cTable)
+	return fmt.Sprintf("%08x", h)
 }
 
 func getFreeSpaceMB(folder string) float64 {
@@ -304,12 +329,12 @@ func main() {
 		allCount := int(free / fsize)
 		saveIndex := int(float64(allCount) * savePer)
 
-		// 使用 worker pool 预生成文件，缓冲区大小为 CPU 核数
-		gen := newFileGenerator(fsize, runtime.NumCPU())
+		// 使用自适应 worker pool 预生成文件
+		gen := newFileGenerator(fsize)
 		gen.start()
 
 		for i := 0; i < allCount; i++ {
-			result := <-gen.ch
+			result := gen.get()
 			b := result.data
 			n := result.name
 
@@ -377,14 +402,20 @@ func main() {
 		scoreContent += "\n" + strings.Join(saveSpeed, "\n")
 		_ = writeFileSync("../fixBadDiskWriteOK.txt", []byte(scoreContent))
 
-		// 填充剩余空间
+		// 填充剩余空间（按 fsize 切分写入多个文件）
 		if len(args) <= 2 {
-			remaining := getFreeSpaceMB(".")
-			if remaining > 0 {
-				data, ok := genFile(remaining)
-				if ok {
-					name := data2name(data)
-					_ = writeFileSync(name, data)
+			for {
+				remaining := getFreeSpaceMB(".")
+				if remaining < fsize {
+					break
+				}
+				data, ok := genFile(fsize)
+				if !ok {
+					break
+				}
+				name := data2name(data)
+				if err := writeFileSync(name, data); err != nil {
+					break
 				}
 			}
 		}
@@ -393,7 +424,6 @@ func main() {
 	}
 
 	// ---- READ / TEST ----
-	var tIndex int64
 	if doTest {
 		writeScore := ""
 		if fileExists("../fixBadDiskWriteOK.txt") {
@@ -433,11 +463,11 @@ func main() {
 
 		for i, key := range files {
 			nt := 1e-10
-			var d []byte
 			readOK := false
+			var hash string
 			for !readOK {
 				st := time.Now()
-				d, err = os.ReadFile(key)
+				h, err := hashFile(key)
 				nt = time.Since(st).Seconds()
 				if err != nil {
 					fmt.Printf("\nRead Error %s\n%v\n", key, err)
@@ -448,20 +478,16 @@ func main() {
 					continue
 				}
 				allt += nt
+				hash = h
 				readOK = true
 			}
 
-			// 异步校验
-			go func(data []byte, k string) {
-				h := md5.Sum(data)
-				name := hex.EncodeToString(h[:])[:8]
-				if name == k {
-					_ = os.Remove(k)
-				} else {
-					fmt.Printf("\nCheck Error %s\n", k)
-				}
-				atomic.AddInt64(&tIndex, 1)
-			}(d, key)
+			// 校验：匹配则删除，不匹配说明坏块，保留占位
+			if hash == key {
+				_ = os.Remove(key)
+			} else {
+				fmt.Printf("\nCheck Error %s\n", key)
+			}
 
 			if i == 0 {
 				continue
@@ -498,11 +524,6 @@ func main() {
 			}
 		}
 
-		// 等待所有校验完成
-		for atomic.LoadInt64(&tIndex) != int64(allCount) {
-			time.Sleep(500 * time.Millisecond)
-		}
-
 		// 保存成绩
 		scoreEcho := ""
 		if len(lastEcho) > 6 {
@@ -531,6 +552,20 @@ func main() {
 
 	fmt.Println("Press Enter to exit 按回车退出")
 	fmt.Scanln()
+}
+
+// hashFile 流式读取文件并计算 CRC32C，不将整个文件加载到内存
+func hashFile(name string) (string, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := crc32.New(crc32cTable)
+	if _, err = io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%08x", h.Sum32()), nil
 }
 
 // writeFileSync 写入文件并强制刷盘
