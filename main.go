@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const ver = "14.1"
+const ver = "14.2"
 
 // fileGenResult 预生成文件的结果
 type fileGenResult struct {
@@ -345,7 +345,7 @@ func main() {
 				err := writeFileSync(n, b)
 				nt = time.Since(st).Seconds()
 				if err != nil {
-					fmt.Printf("\nWrite Error %s\n%v\n", n, err)
+					fmt.Printf("\nWrite Error %s\n%v\n\n\n", n, err)
 					for connectErr(badDir) {
 						fmt.Println("Connect Error 掉盘了！等待重连")
 						time.Sleep(3 * time.Second)
@@ -432,7 +432,7 @@ func main() {
 				writeScore = string(data)
 				fmt.Printf("\nWrite Speed:\n\n%s\n", writeScore)
 			} else {
-				writeScore = "\nData Error! 扩容盘！\n" + "\nData Error! 扩容盘！\n" + "\nData Error! 扩容盘！\n"
+				writeScore = "\nData Error! 扩容盘！\nData Error! 扩容盘！\nData Error! 扩容盘！\n"
 				fmt.Print(writeScore)
 			}
 		}
@@ -470,7 +470,7 @@ func main() {
 				h, err := hashFile(key)
 				nt = time.Since(st).Seconds()
 				if err != nil {
-					fmt.Printf("\nRead Error %s\n%v\n", key, err)
+					fmt.Printf("\nRead Error %s\n%v\n\n\n", key, err)
 					for connectErr(badDir) {
 						fmt.Println("Connect Error 掉盘了！等待重连")
 						time.Sleep(3 * time.Second)
@@ -486,7 +486,7 @@ func main() {
 			if hash == key {
 				_ = os.Remove(key)
 			} else {
-				fmt.Printf("\nCheck Error %s\n", key)
+				fmt.Printf("\nCheck Error %s\n\n", key)
 			}
 
 			if i == 0 {
