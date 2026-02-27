@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -35,6 +36,12 @@ type fileGenerator struct {
 	mu         sync.Mutex
 	curWorkers int
 	maxWorkers int
+}
+
+// 用于存储文件名和修改时间，方便排序
+type fileWithTime struct {
+	name string
+	time int64 // 使用 UnixNano 比较更精确
 }
 
 func newFileGenerator(fsize float64) *fileGenerator {
@@ -440,12 +447,36 @@ func main() {
 			fmt.Println("读取目录失败:", err)
 			os.Exit(1)
 		}
-		// 只处理文件
-		var files []string
+
+		var fileWT []fileWithTime
 		for _, e := range entries {
 			if !e.IsDir() {
-				files = append(files, e.Name())
+				info, err := e.Info()
+				if err != nil {
+					continue // 忽略无法获取信息的文件
+				}
+				fileWT = append(fileWT, fileWithTime{
+					name: e.Name(),
+					time: info.ModTime().UnixNano(),
+				})
 			}
+		}
+
+		// 按修改时间排序，先校验前面的的文件
+		slices.SortFunc(fileWT, func(a, b fileWithTime) int {
+			if a.time < b.time {
+				return -1
+			}
+			if a.time > b.time {
+				return 1
+			}
+			return 0
+		})
+
+		// 排序好的文件列表
+		var files []string
+		for _, f := range fileWT {
+			files = append(files, f.name)
 		}
 
 		allCount := len(files)
