@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-const ver = "14.2"
+const ver = "14.3"
 
 // fileGenResult 预生成文件的结果
 type fileGenResult struct {
@@ -402,21 +402,13 @@ func main() {
 		scoreContent += "\n" + strings.Join(saveSpeed, "\n")
 		_ = writeFileSync("../fixBadDiskWriteOK.txt", []byte(scoreContent))
 
-		// 填充剩余空间（按 fsize 切分写入多个文件）
+		// 填充剩余空间
 		if len(args) <= 2 {
-			for {
-				remaining := getFreeSpaceMB(".")
-				if remaining < fsize {
-					break
-				}
-				data, ok := genFile(fsize)
-				if !ok {
-					break
-				}
+			remaining := getFreeSpaceMB(".")
+			data, ok := genFile(remaining)
+			if ok {
 				name := data2name(data)
-				if err := writeFileSync(name, data); err != nil {
-					break
-				}
+				writeFileSync(name, data)
 			}
 		}
 
